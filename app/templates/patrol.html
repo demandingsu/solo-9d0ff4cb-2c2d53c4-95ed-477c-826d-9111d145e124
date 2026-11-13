@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}{% if outcome %}目录巡检结果 · {% endif %}公告目录巡检{% endblock %}
+{% block content %}
+<section class="hero hero-patrol">
+  <div class="hero-copy">
+    <p class="eyebrow">采购信息员工作台</p>
+    <h1>公告目录巡检</h1>
+    <p class="lede">
+      输入公告目录地址，沿同站分页读取每一条详情。首次完整巡检只建立 SQLite 基准；
+      此后只报告新增公告的标题与来源，旧公告换页、跨页重复都不会误报。
+    </p>
+    <ul class="feature-list">
+      <li>按规范化详情 URL 比对</li>
+      <li>失败即停：本轮不报新增、不改基准</li>
+      <li>基准持久化，重启容器后仍有效</li>
+    </ul>
+  </div>
+
+  <aside class="demo-card">
+    <div class="demo-card-head">
+      <span class="demo-dot"></span>
+      <div>
+        <strong>可切换的巡检示例目录</strong>
+        <p>先在“初始基线”巡检一次，再切换场景对比。</p>
+      </div>
+    </div>
+    <div class="preset-list">
+      <a class="preset" href="{{ demo_patrol_public_url }}" target="_blank" rel="noopener">
+        <span>
+          <strong>打开巡检示例目录</strong>
+          <small>新增 / 换页 / 重复 / 失败场景可切换</small>
+        </span>
+        <span class="preset-arrow" aria-hidden="true">↗</span>
+      </a>
+    </div>
+    <p class="demo-hint">
+      示例目录地址 {{ demo_patrol_url }} 会被自动转到容器内网读取；
+      结果中的来源链接转为本站
+      <a href="{{ demo_patrol_public_url }}" target="_blank" rel="noopener">/demo</a> 代理。
+    </p>
+  </aside>
+</section>
+
+<form class="check-form patrol-form" method="get" action="/patrol/run" aria-label="公告目录巡检">
+  <div class="field field-url">
+    <label for="list_url">公告目录地址</label>
+    <input id="list_url" name="list_url" type="text" required
+           value="{{ form_url }}"
+           placeholder="https://example.com/notices?page=1"
+           autocomplete="off" spellcheck="false">
+    <span class="field-note">工具从该地址沿同站分页读取目录，并逐条读取详情。</span>
+  </div>
+  <button class="submit-button" type="submit">
+    开始巡检
+    <span aria-hidden="true">→</span>
+  </button>
+</form>
+
+{% if form_error %}
+<div class="alert alert-error" role="alert">
+  <strong>无法开始巡检</strong>
+  <p>{{ form_error }}</p>
+</div>
+{% endif %}
+
+{% if not outcome and directory_state and directory_state.exists %}
+<div class="content-card baseline-card">
+  <div class="card-heading">
+    <div>
+      <p class="eyebrow">已有基准</p>
+      <h3>该目录已被巡检过</h3>
+    </div>
+    <span class="muted-note">基准 {{ directory_state.baseline_count }} 条</span>
+  </div>
+  {% if not directory_state.baseline_complete %}
+  <div class="alert alert-unknown baseline-note">
+    <strong>尚无完整基准</strong>
+    <p>此目录的首次巡检没有完整完成（{{ directory_state.last_note or '存在读取失败' }}）。本轮若成功，将作为首次完整巡检建立基准，不报告新增。</p>
+  </div>
+  {% endif %}
+  <div class="baseline-grid">
+    <div><span>首次巡检</span><strong>{{ directory_state.first_patrol_at or '—' }}</strong></div>
+    <div><span>最近成功巡检</span><strong>{{ directory_state.last_success_at or '—' }}</strong></div>
+    <div><span>最近一次状态</span>
+      <strong class="{{ 'text-red' if directory_state.last_status == 'failed' else 'text-green' }}">
+        {{ '巡检失败（基准未改动）' if directory_state.last_status == 'failed' else '成功' }}
+      </strong>
+    </div>
+  </div>
+  {% if recent_additions %}
+  <p class="table-note">最近报告的新增公告：</p>
+  <ul class="recent-list">
+    {% for item in recent_additions[:5] %}
+    <li><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title or item.url }}</a>
+      <time>{{ item.detected_at }}</time></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if outcome %}
+{% set o = outcome %}
+<section class="result-section" aria-labelledby="patrol-result-heading">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">巡检结果</p>
+      <h2 id="patrol-result-heading">
+        {% if o.status == 'baseline' %}基准已建立{% elif o.status == 'new' %}发现新增公告{% elif o.status == 'no_new' %}未发现新增公告{% else %}本轮巡检未完成{% endif %}
+      </h2>
+    </div>
+    <span class="timestamp">基准 {{ o.baseline_count }} 条 · 读取 {{ o.pages_read|length }} 页目录</span>
+  </div>
+
+  {% if o.status == 'failed' or o.status == 'invalid' %}
+  <div class="alert alert-unknown" role="alert">
+    <strong>本轮巡检未完成，未报告新增，基准保持不变</strong>
+    <p>失败页面：{{ o.failures|length }} 个。失败可能发生在分页或详情读取阶段；修复后重试成功时，会补报本次遗漏的新增公告。</p>
+    <div class="failure-list">
+      <ul>
+        {% for failure in o.failures %}
+        <li>
+          <span class="failure-reason">{{ failure.stage_label }} · {{ failure.reason }}</span>
+          <a href="{{ failure.url }}" target="_blank" rel="noopener">{{ failure.url }}</a>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  {% elif o.status == 'baseline' %}
+  <div class="alert alert-info-block">
+    <strong>首次完整巡检只建立基准</strong>
+    <p>已登记 {{ o.baseline_count }} 条公告的规范化 URL。本次不报告任何新增；下次巡检将只报告基准之外的公告。</p>
+  </div>
+  {% elif o.status == 'new' %}
+  <div class="content-card">
+    <div class="card-heading">
+      <div>
+        <p class="eyebrow">新增公告</p>
+        <h3>本次比基准多出的 {{ o.new_count }} 条</h3>
+      </div>
+      <span class="muted-note">按规范化详情 URL 比对</span>
+    </div>
+    <div class="table-wrap">
+      <table class="result-table">
+        <thead>
+          <tr><th>标题</th><th>来源</th></tr>
+        </thead>
+        <tbody>
+          {% for notice in o.new_notices %}
+          <tr>
+            <td class="notice-title-cell">{{ notice.title or '（未读取到标题）' }}</td>
+            <td><a class="inline-link" href="{{ notice.url }}" target="_blank" rel="noopener">打开来源 ↗</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="table-note">以上公告已写入基准；下次巡检不会重复报告。</p>
+  </div>
+  {% else %}
+  <div class="alert alert-info-block">
+    <strong>没有新增公告</strong>
+    <p>本轮读取了目录，未发现基准之外的公告。旧公告即使换了页或跨页重复，也不会重复报告。</p>
+  </div>
+  {% endif %}
+
+  {% if o.warnings %}
+  <div class="alert alert-warning">
+    <strong>巡检提示</strong>
+    <ul>
+      {% for warning in o.warnings %}<li>{{ warning }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if o.status in ['baseline', 'new', 'no_new'] %}
+  <div class="side-panel patrol-stats">
+    <div class="side-block"><p class="side-label">基准总数</p><p class="side-value">{{ o.baseline_count }}</p></div>
+    <div class="side-block"><p class="side-label">本次详情读取</p><p class="side-value">{{ o.detail_page_count }}</p></div>
+    <div class="side-block"><p class="side-label">跨页重复链接</p><p class="side-value">{{ o.duplicate_links }}</p></div>
+  </div>
+  {% endif %}
+
+  <details class="scope-details">
+    <summary>查看本次读取的目录页（{{ o.pages_read|length }} 个）</summary>
+    <ul>
+      {% for page in o.pages_read %}
+      <li><a href="{{ page }}" target="_blank" rel="noopener">{{ page }}</a></li>
+      {% endfor %}
+    </ul>
+    <p>详情页读取 {{ o.detail_page_count }} 个。</p>
+  </details>
+
+  {% if o.recent_additions %}
+  <div class="content-card">
+    <div class="card-heading">
+      <div>
+        <p class="eyebrow">最近新增记录</p>
+        <h3>该目录历次报告的新增公告</h3>
+      </div>
+      <span class="muted-note">最多显示 20 条</span>
+    </div>
+    <ul class="recent-list">
+      {% for item in o.recent_additions %}
+      <li><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title or item.url }}</a>
+        <time>{{ item.detected_at }}</time></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="result-actions">
+    <a class="button-secondary" href="/patrol?list_url={{ form_url|urlencode }}">再次巡检该目录</a>
+    <span>基准持久化在 SQLite 中，容器重启后仍可用；并发巡检不会重复报告同一公告。</span>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

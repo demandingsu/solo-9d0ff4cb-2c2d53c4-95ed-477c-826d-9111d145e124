@@ -16,6 +16,9 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from .crawler import check_lot, normalize_url
+from .patrol import directory_key
+from .patrol_service import run_patrol
+from .store import PatrolStore
 
 BASE_DIR = Path(__file__).resolve().parent
 DEMO_INTERNAL_URL = os.getenv("DEMO_INTERNAL_URL", "http://localhost:8001").rstrip("/")
@@ -23,6 +26,12 @@ DEMO_PUBLIC_URL = os.getenv("DEMO_PUBLIC_URL", "http://localhost:8001").rstrip("
 DEMO_LIST_URL = os.getenv(
     "DEMO_LIST_URL", f"{DEMO_PUBLIC_URL}/notices?page=1"
 )
+DEMO_PATROL_LIST_URL = os.getenv(
+    "DEMO_PATROL_LIST_URL", f"{DEMO_PUBLIC_URL}/patrol/notices?page=1"
+)
+PATROL_DB_PATH = os.getenv("PATROL_DB_PATH", "")
+
+patrol_store = PatrolStore(PATROL_DB_PATH or None)
 
 app = FastAPI(
     title="采购标段截标时间核验",
@@ -98,7 +107,10 @@ templates.env.filters["public_url"] = public_url_for
 @app.middleware("http")
 async def disable_stale_results(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in {"/", "/check", "/api/check"} or request.url.path.startswith("/demo"):
+    if (
+        request.url.path in {"/", "/check", "/api/check", "/patrol", "/api/patrol"}
+        or request.url.path.startswith("/demo")
+    ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -149,7 +161,9 @@ def _base_context(request: Request) -> dict:
     return {
         "request": request,
         "demo_list_url": DEMO_LIST_URL,
+        "demo_patrol_url": DEMO_PATROL_LIST_URL,
         "demo_public_url": "/demo/notices?page=1",
+        "demo_patrol_public_url": "/demo/patrol/notices?page=1",
         "presets": _demo_presets(),
         "demo_available": bool(DEMO_INTERNAL_URL),
     }
@@ -233,6 +247,109 @@ async def api_check(
 @app.post("/api/check")
 async def api_check_post(payload: CheckPayload):
     return await _json_result(payload.list_url, payload.project_no, payload.section_no)
+
+
+# ---------------------------------------------------------------------------
+# Notice-directory patrol
+# ---------------------------------------------------------------------------
+
+
+class PatrolPayload(BaseModel):
+    list_url: str = Field(..., description="公告目录地址")
+
+
+async def _run_patrol_page(list_url: str) -> dict:
+    try:
+        crawl_url = demo_crawl_url(list_url)
+    except ValueError:
+        return await run_patrol(list_url, patrol_store)
+    return await run_patrol(crawl_url, patrol_store)
+
+
+async def _patrol_context(request: Request, form_url: str, outcome=None, error=None) -> dict:
+    state = outcome.state if outcome else None
+    recent = outcome.recent_additions if outcome else []
+    if outcome is None and form_url:
+        try:
+            normalized = demo_crawl_url(form_url)
+            key = directory_key(normalized)
+            state = await patrol_store.get_state_async(key)
+            recent = await patrol_store.recent_additions_async(key)
+        except ValueError:
+            state = None
+    return _base_context(request) | {
+        "form_url": form_url,
+        "outcome": outcome.as_dict(public_url_for) if outcome else None,
+        "form_error": error,
+        "directory_state": state,
+        "recent_additions": [
+            {
+                "url": public_url_for(item["url"]),
+                "title": item["title"],
+                "detected_at": item["detected_at"],
+            }
+            for item in recent
+        ],
+    }
+
+
+@app.get("/patrol", response_class=HTMLResponse)
+async def patrol_index(request: Request, list_url: str = ""):
+    form_url = list_url.strip() or DEMO_PATROL_LIST_URL
+    return templates.TemplateResponse(
+        request,
+        "patrol.html",
+        await _patrol_context(request, form_url),
+    )
+
+
+@app.get("/patrol/run", response_class=HTMLResponse)
+async def patrol_run(request: Request, list_url: str = ""):
+    form_url = list_url.strip()
+    if not form_url:
+        return templates.TemplateResponse(
+            request,
+            "patrol.html",
+            await _patrol_context(request, "", error="请填写公告目录地址。"),
+            status_code=400,
+        )
+
+    try:
+        normalize_url(form_url)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "patrol.html",
+            await _patrol_context(request, form_url, error=str(exc)),
+            status_code=400,
+        )
+
+    # A concurrent patrol collects its own scan; Store.commit_success
+    # serialises the baseline comparison so only the first one reports new.
+    outcome = await _run_patrol_page(form_url)
+    return templates.TemplateResponse(
+        request,
+        "patrol.html",
+        await _patrol_context(request, form_url, outcome=outcome),
+    )
+
+
+@app.get("/api/patrol")
+async def api_patrol(
+    list_url: Annotated[str, Query(description="公告目录地址")],
+):
+    try:
+        crawl_url = demo_crawl_url(list_url)
+    except ValueError:
+        outcome = await run_patrol(list_url, patrol_store)
+        return JSONResponse(outcome.as_dict(public_url_for), status_code=400)
+    outcome = await run_patrol(crawl_url, patrol_store)
+    return JSONResponse(outcome.as_dict(public_url_for))
+
+
+@app.post("/api/patrol")
+async def api_patrol_post(payload: PatrolPayload):
+    return await api_patrol(payload.list_url)
 
 
 _ABSOLUTE_LINK_RE = re.compile(r'((?:href|src|action)=["\'])(/(?!/))', re.I)

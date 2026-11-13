@@ -158,3 +158,17 @@ code { padding: 2px 5px; border-radius: 4px; background: #eef1f5; font-family: u
   .meta-grid dd { margin-bottom: 8px; }
   .pager { flex-wrap: wrap; justify-content: center; }
 }
+
+/* --- Patrol demo ------------------------------------------------------- */
+.scenario-bar { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+.scenario-btn {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--brand);
+  background: var(--paper);
+  font-size: 13px;
+  text-decoration: none;
+}
+.scenario-btn:hover { background: var(--brand-soft); }
+.scenario-btn.is-active { color: #fff; border-color: var(--brand); background: var(--brand); }

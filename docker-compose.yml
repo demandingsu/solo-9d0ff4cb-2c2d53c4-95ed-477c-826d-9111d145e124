@@ -7,6 +7,10 @@ services:
       DEMO_INTERNAL_URL: "http://demo:8000"
       DEMO_PUBLIC_URL: "http://localhost:8001"
       DEMO_LIST_URL: "http://localhost:8001/notices?page=1"
+      DEMO_PATROL_LIST_URL: "http://localhost:8001/patrol/notices?page=1"
+      PATROL_DB_PATH: "/data/patrol.sqlite3"
+    volumes:
+      - patrol-data:/data
     ports:
       - "8000:8000"
     depends_on:
@@ -37,3 +41,6 @@ services:
       start_period: 5s
     init: true
     restart: unless-stopped
+
+volumes:
+  patrol-data:
